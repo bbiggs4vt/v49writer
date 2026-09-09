@@ -26,13 +26,17 @@ def stream_path(template: str, stream_id: Optional[int],
     A ``{sid}`` token is replaced with the stream ID as 8 hex digits
     ('nosid' for data packets without a stream ID); if the template has
     no ``{sid}`` token, the ID is appended to the file stem. A ``{freq}``
-    token is replaced with the stream's RF reference frequency in whole
-    Hz as parsed from its VRT context packets ('nofreq' if none has
-    announced one).
+    token is replaced with the stream's RF reference frequency in MHz
+    with kHz resolution (e.g. '915.000MHz') as parsed from its VRT
+    context packets ('nofreq' if none has announced one).
     """
     sid_label = ('nosid' if stream_id is None
                  else '%08X' % (stream_id & 0xFFFFFFFF))
-    freq_label = 'nofreq' if rf_freq is None else '%d' % round(rf_freq)
+    if rf_freq is None:
+        freq_label = 'nofreq'
+    else:
+        mhz, khz = divmod(round(rf_freq / 1e3), 1000)
+        freq_label = '%d.%03dMHz' % (mhz, khz)
     template = template.replace('{freq}', freq_label)
     if '{sid}' in template:
         return template.replace('{sid}', sid_label)

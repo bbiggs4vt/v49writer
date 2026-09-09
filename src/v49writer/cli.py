@@ -43,9 +43,10 @@ def build_parser() -> argparse.ArgumentParser:
                         'the stream ID as 8 hex digits, otherwise the ID is '
                         'appended to the file stem (out.tmp -> '
                         'out_00001234.tmp). A {freq} token is replaced with '
-                        "the stream's RF frequency in whole Hz as parsed "
-                        'from VRT context packets (or "nofreq"), e.g. '
-                        'cap_{sid}_{freq}.tmp -> cap_00001234_100000000.tmp')
+                        "the stream's RF frequency in MHz at kHz resolution "
+                        'as parsed from VRT context packets (or "nofreq"), '
+                        'e.g. cap_{sid}_{freq}.tmp -> '
+                        'cap_00001234_915.000MHz.tmp')
     p.add_argument('-H', '--host', default='0.0.0.0',
                    help='address to bind, or a UDP multicast group to join '
                         '(default: 0.0.0.0)')

@@ -17,13 +17,17 @@ def test_stream_path_naming():
     assert stream_path('out', 0xDEADBEEF) == 'out_DEADBEEF'
     assert stream_path('cap_{sid}.tmp', 0x42) == 'cap_00000042.tmp'
     assert stream_path('out.tmp', None) == 'out_nosid.tmp'
-    # {freq} token: RF frequency in whole Hz, 'nofreq' when unknown.
+    # {freq} token: RF frequency in MHz at kHz resolution.
+    assert (stream_path('cap_{sid}_{freq}.tmp', 0x42, 915e6)
+            == 'cap_00000042_915.000MHz.tmp')
     assert (stream_path('cap_{sid}_{freq}.tmp', 0x42, 2.4e9)
-            == 'cap_00000042_2400000000.tmp')
-    assert stream_path('cap_{freq}.tmp', 0x42, 100e6) == 'cap_100000000_00000042.tmp'
+            == 'cap_00000042_2400.000MHz.tmp')
+    assert (stream_path('cap_{sid}_{freq}.tmp', 0x42, 99.6127e6)
+            == 'cap_00000042_99.613MHz.tmp')  # rounded to nearest kHz
     assert stream_path('cap_{sid}_{freq}.tmp', 0x42) == 'cap_00000042_nofreq.tmp'
     # Without {sid}, the stream ID is still appended (collision safety).
-    assert stream_path('cap_{freq}.tmp', None, 99.6e6) == 'cap_99600000_nosid.tmp'
+    assert (stream_path('cap_{freq}.tmp', None, 99.6e6)
+            == 'cap_99.600MHz_nosid.tmp')
 
 
 def test_freq_in_filename_from_context(tmp_path):
@@ -34,7 +38,7 @@ def test_freq_in_filename_from_context(tmp_path):
                                         rf_freq=100e6))
     _feed(manager, build_data_packet(b'\0' * 8, 0x7, 0))
     manager.close()
-    path = tmp_path / 'cap_00000007_100000000.tmp'
+    path = tmp_path / 'cap_00000007_100.000MHz.tmp'
     assert path.exists()
     assert dict(bluefile.read_header(str(path))['ext_header'])['RF_FREQ'] \
         == pytest.approx(100e6)
@@ -49,7 +53,7 @@ def test_freq_learned_after_open_renames(tmp_path):
     _feed(manager, build_data_packet(b'\0' * 8, 0x7, 1))
     manager.close()
     assert not (tmp_path / 'cap_00000007_nofreq.tmp').exists()
-    path = tmp_path / 'cap_00000007_2400000000.tmp'
+    path = tmp_path / 'cap_00000007_2400.000MHz.tmp'
     assert path.exists()
     assert bluefile.read_header(str(path))['data_size'] == 16.0
     assert manager.streams[0x7].path == str(path)

@@ -50,14 +50,14 @@ written to `capture_00001234.tmp` (a data stream with no stream ID goes to
 
 - `{sid}` — the stream ID as 8 hex digits. Without this token the ID is
   appended to the file stem.
-- `{freq}` — the stream's RF reference frequency in whole Hz, as parsed
-  from its VRT context packets (`nofreq` if no context announces one).
-  If the frequency only becomes known after the file is opened — context
-  arriving after the first data packet, or a mid-capture retune — the
-  finished file is renamed to match on close.
+- `{freq}` — the stream's RF reference frequency in MHz at kHz resolution
+  (e.g. `915.000MHz`), as parsed from its VRT context packets (`nofreq` if
+  no context announces one). If the frequency only becomes known after the
+  file is opened — context arriving after the first data packet, or a
+  mid-capture retune — the finished file is renamed to match on close.
 
 For example `v49writer -p 5000 'cap_{sid}_{freq}.tmp'` writes files like
-`cap_00001234_915000000.tmp`.
+`cap_00001234_915.000MHz.tmp`.
 
 More examples:
 
