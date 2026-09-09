@@ -7,7 +7,7 @@ import logging
 import signal
 import sys
 
-from .capture import CaptureSession
+from .capture import CaptureManager
 from . import receiver
 
 log = logging.getLogger('v49writer')
@@ -35,19 +35,19 @@ def _parse_stream_id(text: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog='v49writer',
-        description='Receive a VITA 49 (VRT) IQ stream over UDP or TCP and '
-                    'write it to a Midas BLUE (type 1000) file.')
-    p.add_argument('output', help='output BLUE file path')
-    p.add_argument('-t', '--transport', choices=['udp', 'tcp'], default='udp',
-                   help='transport to receive on (default: udp)')
+        description='Receive VITA 49 (VRT) IQ streams over UDP and write '
+                    'each stream ID to its own Midas BLUE (type 1000) file.')
+    p.add_argument('output',
+                   help='output BLUE file path template; each stream ID '
+                        'gets its own file. A {sid} token is replaced with '
+                        'the stream ID as 8 hex digits, otherwise the ID is '
+                        'appended to the file stem (out.tmp -> '
+                        'out_00001234.tmp)')
     p.add_argument('-H', '--host', default='0.0.0.0',
-                   help='address to bind/listen on, a UDP multicast group '
-                        'to join, or the remote host with --connect '
+                   help='address to bind, or a UDP multicast group to join '
                         '(default: 0.0.0.0)')
     p.add_argument('-p', '--port', type=int, required=True,
-                   help='UDP/TCP port')
-    p.add_argument('--connect', action='store_true',
-                   help='TCP only: connect to HOST:PORT instead of listening')
+                   help='UDP port')
     p.add_argument('-f', '--format', choices=FORMATS, default='auto',
                    help="BLUE data format: 'c'=complex/'s'=scalar + "
                         "'b'=int8,'i'=int16,'l'=int32,'x'=int64,"
@@ -55,13 +55,15 @@ def build_parser() -> argparse.ArgumentParser:
                         'context payload format, falling back to ci '
                         '(default: auto)')
     p.add_argument('-r', '--sample-rate', type=float,
-                   help='sample rate in Hz (overrides VRT context)')
+                   help='sample rate in Hz (overrides VRT context; applies '
+                        'to all streams)')
     p.add_argument('-s', '--stream-id', type=_parse_stream_id,
                    help='only capture this VRT stream ID (accepts 0x hex); '
-                        'default: lock to the first data stream seen')
+                        'default: capture every stream seen')
     p.add_argument('-n', '--max-samples', type=int,
-                   help='stop after this many samples (complex pairs count '
-                        'as one sample)')
+                   help='stop each stream after this many samples (complex '
+                        'pairs count as one sample); capture ends when all '
+                        'streams seen have finished')
     p.add_argument('-d', '--duration', type=float,
                    help='stop after this many seconds')
     p.add_argument('--payload-endian', choices=['big', 'little'],
@@ -70,7 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
                         '(default: big, per the VITA 49 standard)')
     p.add_argument('-k', '--keyword', type=_parse_keyword, action='append',
                    default=[], metavar='KEY=VALUE',
-                   help='extra extended-header keyword (repeatable)')
+                   help='extra extended-header keyword, added to every '
+                        'file (repeatable)')
     p.add_argument('-v', '--verbose', action='store_true',
                    help='debug logging')
     return p
@@ -82,12 +85,8 @@ def main(argv=None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format='%(asctime)s %(levelname)s %(message)s')
 
-    if args.connect and args.transport != 'tcp':
-        log.error('--connect only applies to --transport tcp')
-        return 2
-
-    session = CaptureSession(
-        path=args.output,
+    manager = CaptureManager(
+        output=args.output,
         fmt=args.format,
         stream_id=args.stream_id,
         sample_rate=args.sample_rate,
@@ -108,18 +107,12 @@ def main(argv=None) -> int:
     signal.signal(signal.SIGINT, _sigint)
 
     try:
-        if args.transport == 'udp':
-            receiver.receive_udp(session, args.host, args.port,
-                                 duration=args.duration,
-                                 stop=lambda: bool(stopping))
-        else:
-            receiver.receive_tcp(session, args.host, args.port,
-                                 connect=args.connect,
-                                 duration=args.duration,
-                                 stop=lambda: bool(stopping))
+        receiver.receive_udp(manager, args.host, args.port,
+                             duration=args.duration,
+                             stop=lambda: bool(stopping))
     finally:
-        session.close()
-    return 0 if session.data_packets else 1
+        manager.close()
+    return 0 if manager.data_packets else 1
 
 
 if __name__ == '__main__':

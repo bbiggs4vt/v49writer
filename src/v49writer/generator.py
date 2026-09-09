@@ -1,7 +1,8 @@
 """VRT packet building and a test-signal generator CLI (v49gen).
 
 Builds standard-conformant VITA 49 signal data and context packets and
-sends a complex tone over UDP or TCP, for testing v49writer end to end.
+sends complex tones over UDP, for testing v49writer end to end. Give
+--stream-id more than once to interleave multiple streams.
 """
 
 from __future__ import annotations
@@ -93,18 +94,21 @@ def make_tone(num_samples: int, sample_rate: float, tone_freq: float,
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(
         prog='v49gen',
-        description='Send a VITA 49 test IQ stream (complex tone) over '
-                    'UDP or TCP.')
-    p.add_argument('-t', '--transport', choices=['udp', 'tcp'], default='udp')
+        description='Send VITA 49 test IQ streams (complex tones) over UDP.')
     p.add_argument('-H', '--host', default='127.0.0.1')
     p.add_argument('-p', '--port', type=int, required=True)
     p.add_argument('-r', '--sample-rate', type=float, default=1e6)
-    p.add_argument('--tone-freq', type=float, default=100e3)
+    p.add_argument('--tone-freq', type=float, default=100e3,
+                   help='tone frequency of the first stream; each further '
+                        'stream is offset by --tone-step')
+    p.add_argument('--tone-step', type=float, default=50e3)
     p.add_argument('--rf-freq', type=float, default=100e6)
-    p.add_argument('-s', '--stream-id', default='0x1234',
-                   type=lambda s: int(s, 0))
+    p.add_argument('-s', '--stream-id', action='append',
+                   type=lambda s: int(s, 0), metavar='ID',
+                   help='VRT stream ID; repeat to interleave multiple '
+                        'streams (default: 0x1234)')
     p.add_argument('-n', '--num-samples', type=int, default=1_000_000,
-                   help='total samples to send (default 1e6)')
+                   help='samples to send per stream (default 1e6)')
     p.add_argument('--samples-per-packet', type=int, default=1000)
     p.add_argument('--bits', type=int, choices=[8, 16, 32], default=16,
                    help='bits per I/Q component (default 16)')
@@ -116,14 +120,13 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s %(levelname)s %(message)s')
 
-    if args.transport == 'udp':
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.connect((args.host, args.port))
-    else:
-        sock = socket.create_connection((args.host, args.port))
-    log.info('sending %d samples at %.6g Hz to %s:%d over %s',
+    stream_ids = args.stream_id or [0x1234]
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.connect((args.host, args.port))
+    log.info('sending %d samples/stream at %.6g Hz to %s:%d '
+             '(stream IDs: %s)',
              args.num_samples, args.sample_rate, args.host, args.port,
-             args.transport)
+             ', '.join('0x%08X' % s for s in stream_ids))
 
     data_count = 0
     ctx_count = 0
@@ -131,23 +134,26 @@ def main(argv=None) -> int:
     start = time.monotonic()
     try:
         while sent < args.num_samples:
-            if data_count % args.context_interval == 0:
-                sock.send(build_context_packet(
-                    args.stream_id, ctx_count & 0xF,
-                    sample_rate=args.sample_rate, rf_freq=args.rf_freq,
-                    bandwidth=args.sample_rate * 0.8,
-                    item_size_bits=args.bits,
-                    utc_seconds=int(time.time())))
-                ctx_count += 1
             n = min(args.samples_per_packet, args.num_samples - sent)
-            payload = make_tone(n, args.sample_rate, args.tone_freq,
-                                start_sample=sent,
-                                item_size_bits=args.bits)
-            now = time.time()
-            sock.send(build_data_packet(
-                payload, args.stream_id, data_count & 0xF,
-                utc_seconds=int(now),
-                frac_ps=int((now % 1) * 1e12)))
+            for idx, stream_id in enumerate(stream_ids):
+                if data_count % args.context_interval == 0:
+                    sock.send(build_context_packet(
+                        stream_id, ctx_count & 0xF,
+                        sample_rate=args.sample_rate, rf_freq=args.rf_freq,
+                        bandwidth=args.sample_rate * 0.8,
+                        item_size_bits=args.bits,
+                        utc_seconds=int(time.time())))
+                payload = make_tone(
+                    n, args.sample_rate,
+                    args.tone_freq + idx * args.tone_step,
+                    start_sample=sent, item_size_bits=args.bits)
+                now = time.time()
+                sock.send(build_data_packet(
+                    payload, stream_id, data_count & 0xF,
+                    utc_seconds=int(now),
+                    frac_ps=int((now % 1) * 1e12)))
+            if data_count % args.context_interval == 0:
+                ctx_count += 1
             data_count += 1
             sent += n
             if args.throttle:
@@ -159,7 +165,8 @@ def main(argv=None) -> int:
         log.info('receiver went away (%s); stopping', exc)
     finally:
         sock.close()
-    log.info('sent %d samples in %d data packets', sent, data_count)
+    log.info('sent %d samples per stream in %d data packets per stream',
+             sent, data_count)
     return 0
 
 
