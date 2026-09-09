@@ -35,8 +35,9 @@ def _parse_stream_id(text: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog='v49writer',
-        description='Receive VITA 49 (VRT) IQ streams over UDP and write '
-                    'each stream ID to its own Midas BLUE (type 1000) file.')
+        description='Receive VITA 49 (VRT) IQ streams over UDP or TCP and '
+                    'write each stream ID to its own Midas BLUE (type 1000) '
+                    'file.')
     p.add_argument('output',
                    help='output BLUE file path template; each stream ID '
                         'gets its own file. A {sid} token is replaced with '
@@ -47,11 +48,16 @@ def build_parser() -> argparse.ArgumentParser:
                         'as parsed from VRT context packets (or "nofreq"), '
                         'e.g. cap_{sid}_{freq}.tmp -> '
                         'cap_00001234_915.000MHz.tmp')
+    p.add_argument('-t', '--transport', choices=['udp', 'tcp'], default='udp',
+                   help='transport to receive on (default: udp)')
     p.add_argument('-H', '--host', default='0.0.0.0',
-                   help='address to bind, or a UDP multicast group to join '
+                   help='address to bind/listen on, a UDP multicast group '
+                        'to join, or the remote host with --connect '
                         '(default: 0.0.0.0)')
     p.add_argument('-p', '--port', type=int, required=True,
-                   help='UDP port')
+                   help='UDP/TCP port')
+    p.add_argument('--connect', action='store_true',
+                   help='TCP only: connect to HOST:PORT instead of listening')
     p.add_argument('-f', '--format', choices=FORMATS, default='auto',
                    help="BLUE data format: 'c'=complex/'s'=scalar + "
                         "'b'=int8,'i'=int16,'l'=int32,'x'=int64,"
@@ -89,6 +95,10 @@ def main(argv=None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format='%(asctime)s %(levelname)s %(message)s')
 
+    if args.connect and args.transport != 'tcp':
+        log.error('--connect only applies to --transport tcp')
+        return 2
+
     manager = CaptureManager(
         output=args.output,
         fmt=args.format,
@@ -111,9 +121,15 @@ def main(argv=None) -> int:
     signal.signal(signal.SIGINT, _sigint)
 
     try:
-        receiver.receive_udp(manager, args.host, args.port,
-                             duration=args.duration,
-                             stop=lambda: bool(stopping))
+        if args.transport == 'udp':
+            receiver.receive_udp(manager, args.host, args.port,
+                                 duration=args.duration,
+                                 stop=lambda: bool(stopping))
+        else:
+            receiver.receive_tcp(manager, args.host, args.port,
+                                 connect=args.connect,
+                                 duration=args.duration,
+                                 stop=lambda: bool(stopping))
     finally:
         manager.close()
     return 0 if manager.data_packets else 1

@@ -1,13 +1,14 @@
 # v49writer
 
-Receive VITA 49 (VRT) IQ streams over UDP and write them to Midas BLUE
-files (X-Midas / REDHAWK compatible, type 1000) — one file per VRT
+Receive VITA 49 (VRT) IQ streams over UDP or TCP and write them to Midas
+BLUE files (X-Midas / REDHAWK compatible, type 1000) — one file per VRT
 stream ID.
 
 ## Features
 
 - **UDP** unicast or multicast (pass a multicast group as the host and it
-  is joined automatically).
+  is joined automatically) and **TCP** (listen or connect). Both
+  transports demultiplex by stream ID identically.
 - **One BLUE file per stream ID**: packets are demultiplexed by the VRT
   stream ID, and each stream gets its own file, sample-rate/format state,
   drop counter, and metadata keywords. Filter to a single stream with
@@ -65,6 +66,12 @@ More examples:
 # Join a multicast group, stop after 10 seconds
 v49writer -H 239.1.2.3 -p 5000 -d 10 capture.tmp
 
+# TCP: listen for a sender
+v49writer -t tcp -p 5000 capture.tmp
+
+# TCP: connect out to a source
+v49writer -t tcp --connect -H 10.0.0.5 -p 5000 capture.tmp
+
 # Capture only stream 0x1234, exactly 1M samples, override the sample
 # rate, and add custom keywords
 v49writer -p 5000 -s 0x1234 -n 1000000 -r 10e6 -k MISSION=test1 capture.tmp
@@ -88,6 +95,7 @@ streams (each stream's tone is offset by `--tone-step`):
 ```sh
 v49gen -p 5000 -r 1e6 --tone-freq 100e3 -n 1000000
 v49gen -p 5000 -s 0x11 -s 0x22 --throttle       # two streams, real-time paced
+v49gen -t tcp -H 127.0.0.1 -p 5000              # over TCP
 ```
 
 ## Notes
@@ -110,4 +118,4 @@ python -m pytest
 
 The test suite covers the VRT parser, the BLUE writer (including raw header
 byte-offset checks against the BLUE ICD), the per-stream capture logic, and
-an end-to-end two-stream UDP loopback capture.
+end-to-end two-stream UDP and TCP loopback captures.

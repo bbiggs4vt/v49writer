@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from v49writer import bluefile, vita49
-from v49writer.capture import CaptureManager, stream_path
+from v49writer.capture import CaptureManager, StreamFramer, stream_path
 from v49writer.generator import (build_context_packet, build_data_packet,
                                  make_tone)
 
@@ -203,3 +203,17 @@ def test_no_max_samples_never_done(tmp_path):
     _feed(manager, build_data_packet(b'\0' * 8, 1, 0))
     assert not manager.done
     manager.close()
+
+
+def test_stream_framer_reassembly():
+    raw = (build_data_packet(b'\x01' * 8, 1, 0)
+           + build_data_packet(b'\x02' * 12, 1, 1)
+           + build_data_packet(b'\x03' * 4, 1, 2))
+    framer = StreamFramer()
+    packets = []
+    # Feed one byte at a time to exercise partial-frame handling.
+    for i in range(len(raw)):
+        packets.extend(framer.feed(raw[i:i + 1]))
+    assert len(packets) == 3
+    counts = [vita49.parse_packet(p)[0].count for p in packets]
+    assert counts == [0, 1, 2]

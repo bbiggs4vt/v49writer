@@ -332,3 +332,26 @@ class CaptureManager:
             log.warning('no VRT packets received; no files written')
         for stream in self._streams.values():
             stream.close()
+
+
+class StreamFramer:
+    """Splits a TCP byte stream into whole VRT packets using the packet
+    size field in each VRT header."""
+
+    def __init__(self):
+        self._buf = bytearray()
+
+    def feed(self, data: bytes):
+        """Yield complete VRT packet byte strings."""
+        self._buf += data
+        while True:
+            size = vita49.peek_packet_size(self._buf)
+            if size is None or len(self._buf) < size:
+                return
+            if size == 0:
+                raise vita49.VrtParseError(
+                    'VRT packet with size 0 in TCP stream; stream is not '
+                    'aligned to packet boundaries')
+            packet = bytes(self._buf[:size])
+            del self._buf[:size]
+            yield packet
