@@ -1,0 +1,168 @@
+"""VRT packet building and a test-signal generator CLI (v49gen).
+
+Builds standard-conformant VITA 49 signal data and context packets and
+sends a complex tone over UDP or TCP, for testing v49writer end to end.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import socket
+import struct
+import time
+from typing import Optional
+
+import numpy as np
+
+log = logging.getLogger('v49gen')
+
+
+def build_data_packet(payload: bytes, stream_id: int, count: int,
+                      utc_seconds: Optional[int] = None,
+                      frac_ps: Optional[int] = None) -> bytes:
+    """Build a signal data packet (type 1) with optional UTC/psec
+    timestamps. ``payload`` must be a multiple of 4 bytes."""
+    if len(payload) % 4:
+        raise ValueError('payload must be a whole number of 32-bit words')
+    tsi = 1 if utc_seconds is not None else 0
+    tsf = 2 if frac_ps is not None else 0
+    words = 1 + 1 + (1 if tsi else 0) + (2 if tsf else 0) + len(payload) // 4
+    word0 = (0x1 << 28) | (tsi << 22) | (tsf << 20) | ((count & 0xF) << 16) | words
+    out = struct.pack('>II', word0, stream_id)
+    if tsi:
+        out += struct.pack('>I', utc_seconds)
+    if tsf:
+        out += struct.pack('>Q', frac_ps)
+    return out + payload
+
+
+def _q20(hz: float) -> int:
+    return int(round(hz * (1 << 20))) & 0xFFFFFFFFFFFFFFFF
+
+
+def build_context_packet(stream_id: int, count: int,
+                         sample_rate: Optional[float] = None,
+                         rf_freq: Optional[float] = None,
+                         bandwidth: Optional[float] = None,
+                         item_size_bits: Optional[int] = 16,
+                         item_format: int = 0,
+                         real_complex: int = 1,
+                         utc_seconds: Optional[int] = None) -> bytes:
+    """Build a context packet (type 4) carrying the given CIF0 fields."""
+    cif0 = 1 << 31  # context field change indicator
+    body = b''
+    if bandwidth is not None:
+        cif0 |= 1 << 29
+        body += struct.pack('>Q', _q20(bandwidth))
+    if rf_freq is not None:
+        cif0 |= 1 << 27
+        body += struct.pack('>Q', _q20(rf_freq))
+    if sample_rate is not None:
+        cif0 |= 1 << 21
+        body += struct.pack('>Q', _q20(sample_rate))
+    if item_size_bits is not None:
+        cif0 |= 1 << 15
+        w1 = ((real_complex & 0x3) << 29) | ((item_format & 0x1F) << 24)
+        w1 |= ((item_size_bits - 1) & 0x3F) << 6
+        w1 |= (item_size_bits - 1) & 0x3F
+        body += struct.pack('>II', w1, 0)
+    tsi = 1 if utc_seconds is not None else 0
+    words = 1 + 1 + (1 if tsi else 0) + 1 + len(body) // 4
+    word0 = (0x4 << 28) | (tsi << 22) | ((count & 0xF) << 16) | words
+    out = struct.pack('>II', word0, stream_id)
+    if tsi:
+        out += struct.pack('>I', utc_seconds)
+    return out + struct.pack('>I', cif0) + body
+
+
+def make_tone(num_samples: int, sample_rate: float, tone_freq: float,
+              amplitude: float = 0.5, start_sample: int = 0,
+              item_size_bits: int = 16) -> bytes:
+    """Generate big-endian interleaved complex fixed-point tone samples."""
+    n = np.arange(start_sample, start_sample + num_samples)
+    phase = 2 * np.pi * tone_freq * n / sample_rate
+    iq = np.empty(2 * num_samples, dtype=np.float64)
+    iq[0::2] = np.cos(phase)
+    iq[1::2] = np.sin(phase)
+    scale = amplitude * (2 ** (item_size_bits - 1) - 1)
+    dtype = {8: '>i1', 16: '>i2', 32: '>i4'}[item_size_bits]
+    return (iq * scale).round().astype(dtype).tobytes()
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(
+        prog='v49gen',
+        description='Send a VITA 49 test IQ stream (complex tone) over '
+                    'UDP or TCP.')
+    p.add_argument('-t', '--transport', choices=['udp', 'tcp'], default='udp')
+    p.add_argument('-H', '--host', default='127.0.0.1')
+    p.add_argument('-p', '--port', type=int, required=True)
+    p.add_argument('-r', '--sample-rate', type=float, default=1e6)
+    p.add_argument('--tone-freq', type=float, default=100e3)
+    p.add_argument('--rf-freq', type=float, default=100e6)
+    p.add_argument('-s', '--stream-id', default='0x1234',
+                   type=lambda s: int(s, 0))
+    p.add_argument('-n', '--num-samples', type=int, default=1_000_000,
+                   help='total samples to send (default 1e6)')
+    p.add_argument('--samples-per-packet', type=int, default=1000)
+    p.add_argument('--bits', type=int, choices=[8, 16, 32], default=16,
+                   help='bits per I/Q component (default 16)')
+    p.add_argument('--context-interval', type=int, default=100,
+                   help='send a context packet every N data packets')
+    p.add_argument('--throttle', action='store_true',
+                   help='pace transmission at the sample rate')
+    args = p.parse_args(argv)
+    logging.basicConfig(level=logging.INFO,
+                        format='%(asctime)s %(levelname)s %(message)s')
+
+    if args.transport == 'udp':
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect((args.host, args.port))
+    else:
+        sock = socket.create_connection((args.host, args.port))
+    log.info('sending %d samples at %.6g Hz to %s:%d over %s',
+             args.num_samples, args.sample_rate, args.host, args.port,
+             args.transport)
+
+    data_count = 0
+    ctx_count = 0
+    sent = 0
+    start = time.monotonic()
+    try:
+        while sent < args.num_samples:
+            if data_count % args.context_interval == 0:
+                sock.send(build_context_packet(
+                    args.stream_id, ctx_count & 0xF,
+                    sample_rate=args.sample_rate, rf_freq=args.rf_freq,
+                    bandwidth=args.sample_rate * 0.8,
+                    item_size_bits=args.bits,
+                    utc_seconds=int(time.time())))
+                ctx_count += 1
+            n = min(args.samples_per_packet, args.num_samples - sent)
+            payload = make_tone(n, args.sample_rate, args.tone_freq,
+                                start_sample=sent,
+                                item_size_bits=args.bits)
+            now = time.time()
+            sock.send(build_data_packet(
+                payload, args.stream_id, data_count & 0xF,
+                utc_seconds=int(now),
+                frac_ps=int((now % 1) * 1e12)))
+            data_count += 1
+            sent += n
+            if args.throttle:
+                target = start + sent / args.sample_rate
+                delay = target - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
+    except (ConnectionResetError, ConnectionRefusedError, BrokenPipeError) as exc:
+        log.info('receiver went away (%s); stopping', exc)
+    finally:
+        sock.close()
+    log.info('sent %d samples in %d data packets', sent, data_count)
+    return 0
+
+
+if __name__ == '__main__':
+    import sys
+    sys.exit(main())
