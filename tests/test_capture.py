@@ -17,6 +17,50 @@ def test_stream_path_naming():
     assert stream_path('out', 0xDEADBEEF) == 'out_DEADBEEF'
     assert stream_path('cap_{sid}.tmp', 0x42) == 'cap_00000042.tmp'
     assert stream_path('out.tmp', None) == 'out_nosid.tmp'
+    # {freq} token: RF frequency in whole Hz, 'nofreq' when unknown.
+    assert (stream_path('cap_{sid}_{freq}.tmp', 0x42, 2.4e9)
+            == 'cap_00000042_2400000000.tmp')
+    assert stream_path('cap_{freq}.tmp', 0x42, 100e6) == 'cap_100000000_00000042.tmp'
+    assert stream_path('cap_{sid}_{freq}.tmp', 0x42) == 'cap_00000042_nofreq.tmp'
+    # Without {sid}, the stream ID is still appended (collision safety).
+    assert stream_path('cap_{freq}.tmp', None, 99.6e6) == 'cap_99600000_nosid.tmp'
+
+
+def test_freq_in_filename_from_context(tmp_path):
+    # Context (with RF freq) before data: the file opens under its final name.
+    template = str(tmp_path / 'cap_{sid}_{freq}.tmp')
+    manager = CaptureManager(template, fmt='ci')
+    _feed(manager, build_context_packet(0x7, 0, sample_rate=1e6,
+                                        rf_freq=100e6))
+    _feed(manager, build_data_packet(b'\0' * 8, 0x7, 0))
+    manager.close()
+    path = tmp_path / 'cap_00000007_100000000.tmp'
+    assert path.exists()
+    assert dict(bluefile.read_header(str(path))['ext_header'])['RF_FREQ'] \
+        == pytest.approx(100e6)
+
+
+def test_freq_learned_after_open_renames(tmp_path):
+    # Data arrives first, context later: the file is renamed on close.
+    template = str(tmp_path / 'cap_{sid}_{freq}.tmp')
+    manager = CaptureManager(template, fmt='ci')
+    _feed(manager, build_data_packet(b'\0' * 8, 0x7, 0))
+    _feed(manager, build_context_packet(0x7, 0, rf_freq=2.4e9))
+    _feed(manager, build_data_packet(b'\0' * 8, 0x7, 1))
+    manager.close()
+    assert not (tmp_path / 'cap_00000007_nofreq.tmp').exists()
+    path = tmp_path / 'cap_00000007_2400000000.tmp'
+    assert path.exists()
+    assert bluefile.read_header(str(path))['data_size'] == 16.0
+    assert manager.streams[0x7].path == str(path)
+
+
+def test_freq_never_known_keeps_nofreq(tmp_path):
+    template = str(tmp_path / 'cap_{sid}_{freq}.tmp')
+    manager = CaptureManager(template, fmt='ci')
+    _feed(manager, build_data_packet(b'\0' * 8, 0x7, 0))
+    manager.close()
+    assert (tmp_path / 'cap_00000007_nofreq.tmp').exists()
 
 
 def test_capture_tone_with_context(tmp_path):

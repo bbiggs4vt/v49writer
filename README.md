@@ -46,8 +46,18 @@ v49writer -p 5000 capture.tmp
 
 The output argument is a path template: a stream with ID `0x1234` is
 written to `capture_00001234.tmp` (a data stream with no stream ID goes to
-`capture_nosid.tmp`). Put a `{sid}` token in the path to control where the
-ID lands, e.g. `out/{sid}.tmp`.
+`capture_nosid.tmp`). Two tokens are available:
+
+- `{sid}` — the stream ID as 8 hex digits. Without this token the ID is
+  appended to the file stem.
+- `{freq}` — the stream's RF reference frequency in whole Hz, as parsed
+  from its VRT context packets (`nofreq` if no context announces one).
+  If the frequency only becomes known after the file is opened — context
+  arriving after the first data packet, or a mid-capture retune — the
+  finished file is renamed to match on close.
+
+For example `v49writer -p 5000 'cap_{sid}_{freq}.tmp'` writes files like
+`cap_00001234_915000000.tmp`.
 
 More examples:
 

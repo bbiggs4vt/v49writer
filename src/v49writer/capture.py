@@ -19,18 +19,25 @@ from . import bluefile, vita49
 log = logging.getLogger(__name__)
 
 
-def stream_path(template: str, stream_id: Optional[int]) -> str:
+def stream_path(template: str, stream_id: Optional[int],
+                rf_freq: Optional[float] = None) -> str:
     """Build the output path for one stream.
 
-    If ``template`` contains a ``{sid}`` token it is replaced with the
-    stream ID as 8 hex digits ('nosid' for data packets without a stream
-    ID); otherwise the ID is appended to the file stem.
+    A ``{sid}`` token is replaced with the stream ID as 8 hex digits
+    ('nosid' for data packets without a stream ID); if the template has
+    no ``{sid}`` token, the ID is appended to the file stem. A ``{freq}``
+    token is replaced with the stream's RF reference frequency in whole
+    Hz as parsed from its VRT context packets ('nofreq' if none has
+    announced one).
     """
-    label = 'nosid' if stream_id is None else '%08X' % (stream_id & 0xFFFFFFFF)
+    sid_label = ('nosid' if stream_id is None
+                 else '%08X' % (stream_id & 0xFFFFFFFF))
+    freq_label = 'nofreq' if rf_freq is None else '%d' % round(rf_freq)
+    template = template.replace('{freq}', freq_label)
     if '{sid}' in template:
-        return template.replace('{sid}', label)
+        return template.replace('{sid}', sid_label)
     root, ext = os.path.splitext(template)
-    return '%s_%s%s' % (root, label, ext)
+    return '%s_%s%s' % (root, sid_label, ext)
 
 
 class StreamCapture:
@@ -42,13 +49,14 @@ class StreamCapture:
     packet).
     """
 
-    def __init__(self, path: str, stream_id: Optional[int],
+    def __init__(self, template: str, stream_id: Optional[int],
                  fmt: str = 'AUTO', fallback_fmt: str = 'CI',
                  sample_rate: Optional[float] = None,
                  payload_endian: str = 'big',
                  max_samples: Optional[int] = None,
                  extra_keywords=None):
-        self.path = path
+        self.template = template
+        self.path: Optional[str] = None  # resolved when the file is opened
         self.stream_id = stream_id
         self._fmt_arg = fmt.upper()
         self._fallback_fmt = fallback_fmt.upper()
@@ -140,6 +148,8 @@ class StreamCapture:
         if self._writer is None:
             fmt = self._resolve_format()
             xdelta = 1.0 / self.sample_rate if self.sample_rate else 1.0
+            self.path = stream_path(self.template, self.stream_id,
+                                    self.rf_freq)
             self._writer = bluefile.BlueWriter(self.path, fmt=fmt,
                                                xdelta=xdelta)
             log.info('[%s] writing %s (format %s)',
@@ -210,10 +220,30 @@ class StreamCapture:
             self._writer.xdelta = 1.0 / self.sample_rate
         self._writer.set_keywords(self.keywords())
         self._writer.close()
+        self._rename_if_freq_learned()
         log.info('[%s] wrote %d samples (%d bytes) from %d data packets '
                  '(%d dropped) to %s',
                  self._label(), self.samples_written, self._writer.data_bytes,
                  self.data_packets, self.dropped_packets, self.path)
+
+    def _rename_if_freq_learned(self) -> None:
+        """If the template names the file by frequency but the RF frequency
+        only became known after the file was opened (context arrived after
+        the first data packet, or changed mid-capture), rename the finished
+        file to match."""
+        if '{freq}' not in self.template:
+            return
+        desired = stream_path(self.template, self.stream_id, self.rf_freq)
+        if desired == self.path:
+            return
+        if os.path.exists(desired):
+            log.warning('[%s] not renaming %s to %s: target already exists',
+                        self._label(), self.path, desired)
+            return
+        os.rename(self.path, desired)
+        log.info('[%s] renamed %s to %s (RF frequency learned after the '
+                 'file was opened)', self._label(), self.path, desired)
+        self.path = desired
 
 
 class CaptureManager:
@@ -248,7 +278,7 @@ class CaptureManager:
         stream = self._streams.get(stream_id)
         if stream is None:
             stream = StreamCapture(
-                path=stream_path(self.output, stream_id),
+                template=self.output,
                 stream_id=stream_id,
                 fmt=self._fmt,
                 sample_rate=self._sample_rate,
