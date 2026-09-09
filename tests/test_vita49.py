@@ -87,6 +87,39 @@ def test_truncated_packet_raises():
         vita49.parse_packet(raw[:20])
 
 
+def test_unsupported_types_reported_as_skipped():
+    # Extension data packet (type 3, with stream ID).
+    word0 = (0x3 << 28) | (1 << 16) | 3
+    raw = struct.pack('>III', word0, 0x77, 0xDEADBEEF)
+    pkt, end = vita49.parse_packet(raw)
+    assert end == len(raw)
+    assert isinstance(pkt, vita49.SkippedPacket)
+    assert pkt.packet_type_bits == 0x3
+    assert pkt.stream_id == 0x77
+    assert 'extension data' in pkt.describe()
+
+    # Reserved type bits (0x9) are also skipped, not an error.
+    word0 = (0x9 << 28) | 2
+    raw = struct.pack('>II', word0, 0)
+    pkt, end = vita49.parse_packet(raw)
+    assert isinstance(pkt, vita49.SkippedPacket)
+    assert 'reserved' in pkt.describe()
+
+
+def test_context_with_cif1_enable_still_parses_cif0_fields():
+    # Hand-build a context packet with the CIF1 enable bit set: one CIF1
+    # indicator word follows CIF0 before any field data.
+    cif0 = (1 << 21) | (1 << 1)  # sample rate + CIF1 enable
+    body = struct.pack('>I', 0)  # empty CIF1 indicator
+    body += struct.pack('>Q', int(5e6 * (1 << 20)))  # sample rate field
+    words = 1 + 1 + 1 + len(body) // 4
+    word0 = (0x4 << 28) | words
+    raw = struct.pack('>II', word0, 0x1) + struct.pack('>I', cif0) + body
+    pkt, _ = vita49.parse_packet(raw)
+    assert isinstance(pkt, vita49.ContextPacket)
+    assert pkt.sample_rate_hz == pytest.approx(5e6)
+
+
 def test_fixed_point_negative():
     # -1.5 Hz in Q20: two's complement
     raw = -int(1.5 * (1 << 20)) & 0xFFFFFFFFFFFFFFFF

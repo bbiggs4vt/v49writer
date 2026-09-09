@@ -205,6 +205,41 @@ def test_no_max_samples_never_done(tmp_path):
     manager.close()
 
 
+def test_output_directories_created(tmp_path):
+    template = str(tmp_path / 'captures' / 'run1' / 'cap_{sid}.tmp')
+    manager = CaptureManager(template, fmt='ci')
+    _feed(manager, build_data_packet(b'\x00\x01\x00\x02', 0x3, 0))
+    manager.close()
+    path = tmp_path / 'captures' / 'run1' / 'cap_00000003.tmp'
+    assert path.exists()
+    np.testing.assert_array_equal(bluefile.read_data(str(path)), [1 + 2j])
+
+
+def test_skipped_packets_counted_and_capture_unaffected(tmp_path, caplog):
+    import struct
+
+    manager = CaptureManager(str(tmp_path / 'cap.tmp'), fmt='ci')
+    # An extension-data packet (type 3) interleaved with real data.
+    ext = struct.pack('>III', (0x3 << 28) | 3, 0x77, 0)
+    with caplog.at_level('WARNING'):
+        _feed(manager, build_data_packet(b'\x00\x01\x00\x02', 0x1, 0))
+        _feed(manager, ext)
+        _feed(manager, ext)
+        _feed(manager, build_data_packet(b'\x00\x03\x00\x04', 0x1, 1))
+    manager.close()
+
+    assert manager.skipped_packets == {
+        'extension data (with stream ID) packet (type 0x3)': 2}
+    # Warned once, not per packet.
+    warnings = [r for r in caplog.records
+                if 'unsupported VRT extension data' in r.message
+                and 'ignoring' in r.message]
+    assert len(warnings) == 1
+    # The real stream captured normally.
+    data = bluefile.read_data(str(tmp_path / 'cap_00000001.tmp'))
+    np.testing.assert_array_equal(data, [1 + 2j, 3 + 4j])
+
+
 def test_stream_framer_reassembly():
     raw = (build_data_packet(b'\x01' * 8, 1, 0)
            + build_data_packet(b'\x02' * 12, 1, 1)

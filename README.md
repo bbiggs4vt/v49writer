@@ -29,6 +29,14 @@ stream ID.
   one with `--format`.
 - Detects dropped packets per stream via the VRT packet count and records
   the tally.
+- **Stream-health diagnostics**: unsupported VRT packet types (extension
+  data/context, command, reserved), non-UTC timestamps, payload formats
+  BLUE can't represent, and payload sizes that don't match the data
+  format are each warned about once (repeats at debug level, totals at
+  close), so a misformatted stream is caught without flooding the log.
+  `-v` adds per-stream debug detail (first-packet header fields, CIF
+  parsing notes).
+- Output directories are created automatically if they don't exist.
 - Stop with Ctrl-C, `--duration`, or `--max-samples`; headers are
   finalized on close either way.
 

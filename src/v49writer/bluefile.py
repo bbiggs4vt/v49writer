@@ -15,6 +15,7 @@ The J1950 epoch (1950-01-01T00:00:00 UTC) is used for the timecode field.
 
 from __future__ import annotations
 
+import os
 import struct
 from typing import List, Optional, Tuple, Union
 
@@ -145,6 +146,9 @@ class BlueWriter:
         self.timecode_unix: Optional[float] = None
         self._keywords: List[Tuple[str, KeywordValue]] = []
         self._data_bytes = 0
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         self._fh = open(path, 'wb')
         self._fh.write(b'\0' * HEADER_SIZE)
         self._closed = False

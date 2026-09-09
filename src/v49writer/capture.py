@@ -86,6 +86,17 @@ class StreamCapture:
         self.dropped_packets = 0
         self.samples_written = 0
         self.done = False
+        self._warned = set()
+
+    def _warn_once(self, key: str, msg: str, *args) -> None:
+        """Log a warning the first time ``key`` occurs for this stream;
+        repeats go to debug so a malformed stream can't flood the log."""
+        if key in self._warned:
+            log.debug('[%s] (repeat) ' + msg, self._label(), *args)
+        else:
+            self._warned.add(key)
+            log.warning('[%s] ' + msg + ' (repeats logged at debug level)',
+                        self._label(), *args)
 
     # ------------------------------------------------------------------ #
 
@@ -109,10 +120,13 @@ class StreamCapture:
         if pkt.payload_format is not None:
             fmt = pkt.payload_format.blue_format()
             if fmt is None:
-                log.warning('[%s] context payload format not representable '
-                            'in BLUE (item_format=%d, size=%d bits); ignoring',
-                            self._label(), pkt.payload_format.item_format,
-                            pkt.payload_format.data_item_size)
+                self._warn_once(
+                    'bad-payload-format',
+                    'context payload format not representable in BLUE '
+                    '(real/complex=%d, item_format=0x%02X, size=%d bits); '
+                    'ignoring', pkt.payload_format.real_complex,
+                    pkt.payload_format.item_format,
+                    pkt.payload_format.data_item_size)
             else:
                 if self._context_fmt != fmt:
                     log.info('[%s] context: payload format %s',
@@ -135,6 +149,21 @@ class StreamCapture:
     def handle_data(self, pkt: vita49.DataPacket) -> None:
         if self.done:
             return
+        if self.data_packets == 0:
+            log.debug('[%s] first data packet: type %d, %d bytes payload, '
+                      'tsi=%s, tsf=%s, class_id=%s, trailer=%s',
+                      self._label(), pkt.packet_type,
+                      len(pkt.payload), pkt.timestamp.tsi.name,
+                      pkt.timestamp.tsf.name, pkt.class_id,
+                      'present' if pkt.trailer is not None else 'absent')
+            if pkt.timestamp.tsi == vita49.Tsi.NONE:
+                log.info('[%s] data packets carry no integer timestamps; '
+                         'BLUE timecode will be 0', self._label())
+            elif pkt.timestamp.tsi != vita49.Tsi.UTC:
+                self._warn_once(
+                    'non-utc-timestamp',
+                    'data packet timestamps are %s, not UTC; BLUE timecode '
+                    'will be 0', pkt.timestamp.tsi.name)
         if self._last_count is not None:
             expected = (self._last_count + 1) & 0xF
             if pkt.count != expected:
@@ -183,9 +212,11 @@ class StreamCapture:
         esize = dtype.itemsize
         usable = (len(payload) // esize) * esize
         if usable != len(payload):
-            log.warning('[%s] payload length %d not a multiple of element '
-                        'size %d; trailing bytes dropped',
-                        self._label(), len(payload), esize)
+            self._warn_once(
+                'odd-payload-length',
+                'payload length %d is not a multiple of the %d-byte element '
+                'size; trailing bytes dropped. The stream may not be %s '
+                'formatted', len(payload), esize, self._writer.fmt)
             payload = payload[:usable]
         if esize == 1 or not self._payload_big_endian:
             return payload
@@ -274,6 +305,7 @@ class CaptureManager:
         self._max_samples = max_samples
         self._extra_keywords = list(extra_keywords or [])
         self._streams: Dict[Optional[int], StreamCapture] = {}
+        self.skipped_packets: Dict[str, int] = {}
 
     def _stream_for(self, stream_id: Optional[int]) -> Optional[StreamCapture]:
         if (self._stream_filter is not None
@@ -303,6 +335,19 @@ class CaptureManager:
             stream = self._stream_for(pkt.stream_id)
             if stream is not None:
                 stream.handle_data(pkt)
+        elif isinstance(pkt, vita49.SkippedPacket):
+            desc = pkt.describe()
+            first = desc not in self.skipped_packets
+            self.skipped_packets[desc] = self.skipped_packets.get(desc, 0) + 1
+            if first:
+                log.warning('received unsupported VRT %s%s; ignoring it '
+                            '(repeats logged at debug level, totals '
+                            'reported at close)', desc,
+                            '' if pkt.stream_id is None
+                            else ' on stream 0x%08X' % pkt.stream_id)
+            else:
+                log.debug('unsupported VRT %s (%d so far)', desc,
+                          self.skipped_packets[desc])
 
     @property
     def done(self) -> bool:
@@ -328,10 +373,15 @@ class CaptureManager:
         return sum(s.samples_written for s in self._streams.values())
 
     def close(self) -> None:
-        if not self._streams:
+        if not self._streams and not self.skipped_packets:
             log.warning('no VRT packets received; no files written')
+        elif not self._streams:
+            log.warning('no signal data or context packets received; '
+                        'no files written')
         for stream in self._streams.values():
             stream.close()
+        for desc, count in sorted(self.skipped_packets.items()):
+            log.warning('ignored %d unsupported VRT %s', count, desc)
 
 
 class StreamFramer:

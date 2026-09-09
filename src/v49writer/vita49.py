@@ -13,10 +13,13 @@ All VRT fields are big-endian (network order) per the standard.
 
 from __future__ import annotations
 
+import logging
 import struct
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 VRT_WORD = 4  # bytes per 32-bit VRT word
 
@@ -138,6 +141,31 @@ class ContextPacket:
     payload_format: Optional[PayloadFormat] = None
 
 
+@dataclass
+class SkippedPacket:
+    """A syntactically valid VRT packet of a type this application does
+    not process (extension data/context, command, or a reserved type).
+    Returned so callers can count and report them instead of silently
+    dropping traffic from a misconfigured source."""
+    packet_type_bits: int
+    size_words: int
+    stream_id: Optional[int] = None
+
+    _NAMES = {
+        0x2: 'extension data',
+        0x3: 'extension data (with stream ID)',
+        0x5: 'extension context',
+        0x6: 'command',
+        0x7: 'extension command',
+    }
+
+    def describe(self) -> str:
+        name = self._NAMES.get(self.packet_type_bits,
+                               'reserved/unknown type %d'
+                               % self.packet_type_bits)
+        return '%s packet (type 0x%X)' % (name, self.packet_type_bits)
+
+
 class VrtParseError(ValueError):
     pass
 
@@ -172,8 +200,8 @@ def parse_packet(buf: bytes, offset: int = 0):
     """Parse one VRT packet starting at ``offset``.
 
     Returns a (packet, next_offset) tuple. ``packet`` is a DataPacket,
-    ContextPacket, or None for packet types we do not handle (the offset
-    still advances past them).
+    ContextPacket, or a SkippedPacket for packet types we do not handle
+    (the offset still advances past them).
     """
     if len(buf) - offset < VRT_WORD:
         raise VrtParseError('short buffer: no room for VRT header')
@@ -196,7 +224,9 @@ def parse_packet(buf: bytes, offset: int = 0):
     try:
         ptype = PacketType(ptype_bits)
     except ValueError:
-        return None, end
+        log.debug('skipping VRT packet with reserved type bits 0x%X '
+                  '(%d words)', ptype_bits, size_words)
+        return SkippedPacket(ptype_bits, size_words), end
 
     pos = offset + VRT_WORD
 
@@ -248,8 +278,11 @@ def parse_packet(buf: bytes, offset: int = 0):
                              class_id, timestamp)
         return pkt, end
 
-    # Extension data/context and command packets: skip.
-    return None, end
+    # Extension data/context and command packets: skip, but report.
+    log.debug('skipping unsupported VRT %s (%d words, stream %s)',
+              SkippedPacket(ptype_bits, size_words).describe(), size_words,
+              '0x%08X' % stream_id if stream_id is not None else 'n/a')
+    return SkippedPacket(ptype_bits, size_words, stream_id), end
 
 
 def _parse_context(buf, pos, end, count, size_words, stream_id, class_id,
@@ -271,6 +304,17 @@ def _parse_context(buf, pos, end, count, size_words, stream_id, class_id,
         vals = struct.unpack_from('>%dI' % nwords, buf, pos)
         pos += nwords * VRT_WORD
         return vals
+
+    # VITA 49.2: enabled CIF1/CIF2/CIF3/CIF7 indicator words directly
+    # follow CIF0, before any field data. Consume them so the CIF0 fields
+    # below parse from the right offset; their own fields trail the CIF0
+    # fields and are simply left unparsed.
+    extra_cifs = sum(1 for bit in (1, 2, 3, 7) if cif0 & (1 << bit))
+    if extra_cifs:
+        take(extra_cifs)
+        log.debug('context packet enables %d additional CIF word(s) '
+                  '(CIF0=0x%08X); their fields are not parsed',
+                  extra_cifs, cif0)
 
     # CIF0 fields appear in descending bit order. Sizes (in words) come from
     # ANSI/VITA 49.2 table 9.1-1; VITA 49.0 uses the same layout.
