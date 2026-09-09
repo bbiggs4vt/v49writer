@@ -18,6 +18,95 @@ def _free_port(kind):
     return port
 
 
+def test_tcp_multiple_connections(tmp_path):
+    """Two senders connect concurrently, each carrying its own stream ID;
+    both streams land in their own files."""
+    from v49writer.generator import build_context_packet, build_data_packet
+
+    port = _free_port(socket.SOCK_STREAM)
+    template = str(tmp_path / 'multi_{sid}.tmp')
+    manager = CaptureManager(template, fmt='ci')
+    ready = threading.Event()
+
+    def both_streams_complete():
+        # max_samples can't stop this capture deterministically: the first
+        # stream could finish before the second connection is even seen.
+        return all(sid in manager.streams
+                   and manager.streams[sid].samples_written >= 200
+                   for sid in (0xA1, 0xB2))
+
+    rx = threading.Thread(
+        target=receiver.receive_tcp,
+        args=(manager, '127.0.0.1', port),
+        kwargs={'duration': 15, 'on_ready': ready.set,
+                'stop': both_streams_complete},
+        daemon=True)
+    rx.start()
+    assert ready.wait(timeout=10)
+
+    def sender(sid, value):
+        conn = socket.create_connection(('127.0.0.1', port))
+        try:
+            conn.sendall(build_context_packet(sid, 0, sample_rate=1e6))
+            payload = np.full(200, value, dtype='>i2').tobytes()  # 100 cx
+            for i in range(2):
+                conn.sendall(build_data_packet(payload, sid, i))
+        finally:
+            conn.close()
+
+    threads = [threading.Thread(target=sender, args=(0xA1, 7)),
+               threading.Thread(target=sender, args=(0xB2, 9))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    rx.join(timeout=20)
+    assert not rx.is_alive()
+    manager.close()
+
+    assert set(manager.streams) == {0xA1, 0xB2}
+    data_a = bluefile.read_data(str(tmp_path / 'multi_000000A1.tmp'))
+    data_b = bluefile.read_data(str(tmp_path / 'multi_000000B2.tmp'))
+    assert len(data_a) == 200 and len(data_b) == 200
+    np.testing.assert_array_equal(data_a, np.full(200, 7 + 7j))
+    np.testing.assert_array_equal(data_b, np.full(200, 9 + 9j))
+
+
+def test_tcp_desynced_connection_dropped_others_survive(tmp_path):
+    """A connection sending garbage is closed; a good connection keeps
+    capturing."""
+    from v49writer.generator import build_data_packet
+
+    port = _free_port(socket.SOCK_STREAM)
+    manager = CaptureManager(str(tmp_path / 'cap.tmp'), fmt='ci',
+                             max_samples=4)
+    ready = threading.Event()
+    rx = threading.Thread(
+        target=receiver.receive_tcp,
+        args=(manager, '127.0.0.1', port),
+        kwargs={'duration': 15, 'on_ready': ready.set},
+        daemon=True)
+    rx.start()
+    assert ready.wait(timeout=10)
+
+    bad = socket.create_connection(('127.0.0.1', port))
+    good = socket.create_connection(('127.0.0.1', port))
+    try:
+        # A zero first word decodes as packet size 0: unframeable garbage.
+        bad.sendall(b'\x00' * 8)
+        good.sendall(build_data_packet(b'\x00\x01\x00\x02' * 2, 0x5, 0))
+        good.sendall(build_data_packet(b'\x00\x01\x00\x02' * 2, 0x5, 1))
+    finally:
+        bad.close()
+        good.close()
+    rx.join(timeout=20)
+    assert not rx.is_alive()
+    manager.close()
+
+    assert list(manager.streams) == [0x5]
+    assert manager.streams[0x5].samples_written == 4
+
+
 @pytest.mark.parametrize('transport', ['udp', 'tcp'])
 def test_end_to_end_multistream(tmp_path, transport):
     kind = socket.SOCK_DGRAM if transport == 'udp' else socket.SOCK_STREAM

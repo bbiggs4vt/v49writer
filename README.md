@@ -8,7 +8,9 @@ stream ID.
 
 - **UDP** unicast or multicast (pass a multicast group as the host and it
   is joined automatically) and **TCP** (listen or connect). Both
-  transports demultiplex by stream ID identically.
+  transports demultiplex by stream ID identically; TCP listen mode
+  accepts any number of concurrent sender connections, all feeding the
+  same capture.
 - **One BLUE file per stream ID**: packets are demultiplexed by the VRT
   stream ID, and each stream gets its own file, sample-rate/format state,
   drop counter, and metadata keywords. Filter to a single stream with
@@ -66,7 +68,7 @@ More examples:
 # Join a multicast group, stop after 10 seconds
 v49writer -H 239.1.2.3 -p 5000 -d 10 capture.tmp
 
-# TCP: listen for a sender
+# TCP: listen; multiple senders may connect concurrently
 v49writer -t tcp -p 5000 capture.tmp
 
 # TCP: connect out to a source
