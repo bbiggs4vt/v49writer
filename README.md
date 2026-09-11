@@ -114,9 +114,11 @@ v49gen -t tcp -H 127.0.0.1 -p 5000              # over TCP
   byte-swapped to little-endian on write. For nonconformant sources use
   `--payload-endian little`.
 - The BLUE `timecode` is seconds since 1950-01-01 (J1950), taken from each
-  stream's first data packet carrying a UTC (TSI=1) timestamp; the
-  fractional part uses real-time picosecond (TSF=2) timestamps when
-  present.
+  stream's first data packet carrying a UTC (TSI=1) or GPS (TSI=2)
+  timestamp; the fractional part uses real-time picosecond (TSF=2)
+  timestamps when present. GPS timestamps are converted to UTC using the
+  GPS leap-second offset (default 18, correct since 2017; override with
+  `--gps-leap-seconds` if a new leap second is ever introduced).
 - `--max-samples` applies per stream; the capture ends once every stream
   seen so far has reached the limit (or on Ctrl-C / `--duration`).
 

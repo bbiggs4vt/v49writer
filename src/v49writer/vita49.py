@@ -23,6 +23,14 @@ log = logging.getLogger(__name__)
 
 VRT_WORD = 4  # bytes per 32-bit VRT word
 
+# GPS epoch (1980-01-06T00:00:00 UTC) in UNIX time.
+GPS_EPOCH_UNIX = 315964800
+
+# Leap seconds between GPS time and UTC. GPS time is not adjusted for leap
+# seconds, so UTC = GPS - offset. 18 has been correct since 2017-01-01;
+# override if another leap second is ever introduced.
+DEFAULT_GPS_LEAP_SECONDS = 18
+
 
 class PacketType(IntEnum):
     SIGNAL_DATA = 0x0
@@ -63,11 +71,24 @@ class Timestamp:
     integer: Optional[int] = None
     fractional: Optional[int] = None
 
-    def to_utc_seconds(self) -> Optional[float]:
-        """Return seconds since the UNIX epoch, or None if unavailable."""
-        if self.tsi != Tsi.UTC or self.integer is None:
+    def to_utc_seconds(
+            self,
+            gps_leap_seconds: Optional[int] = DEFAULT_GPS_LEAP_SECONDS,
+    ) -> Optional[float]:
+        """Return seconds since the UNIX epoch, or None if unavailable.
+
+        UTC timestamps are returned directly. GPS timestamps (seconds
+        since 1980-01-06, unadjusted for leap seconds) are converted
+        using ``gps_leap_seconds``; pass None to disable GPS conversion.
+        """
+        if self.integer is None:
             return None
-        seconds = float(self.integer)
+        if self.tsi == Tsi.UTC:
+            seconds = float(self.integer)
+        elif self.tsi == Tsi.GPS and gps_leap_seconds is not None:
+            seconds = float(GPS_EPOCH_UNIX + self.integer - gps_leap_seconds)
+        else:
+            return None
         if self.tsf == Tsf.REAL_TIME_PS and self.fractional is not None:
             seconds += self.fractional * 1e-12
         return seconds

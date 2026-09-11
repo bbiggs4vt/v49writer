@@ -21,18 +21,27 @@ log = logging.getLogger('v49gen')
 
 def build_data_packet(payload: bytes, stream_id: int, count: int,
                       utc_seconds: Optional[int] = None,
-                      frac_ps: Optional[int] = None) -> bytes:
-    """Build a signal data packet (type 1) with optional UTC/psec
-    timestamps. ``payload`` must be a multiple of 4 bytes."""
+                      frac_ps: Optional[int] = None,
+                      gps_seconds: Optional[int] = None) -> bytes:
+    """Build a signal data packet (type 1) with optional UTC (TSI=1) or
+    GPS (TSI=2) integer timestamps and an optional real-time picosecond
+    fractional timestamp. ``payload`` must be a multiple of 4 bytes."""
     if len(payload) % 4:
         raise ValueError('payload must be a whole number of 32-bit words')
-    tsi = 1 if utc_seconds is not None else 0
+    if utc_seconds is not None and gps_seconds is not None:
+        raise ValueError('give either utc_seconds or gps_seconds, not both')
+    if utc_seconds is not None:
+        tsi, ts_int = 1, utc_seconds
+    elif gps_seconds is not None:
+        tsi, ts_int = 2, gps_seconds
+    else:
+        tsi, ts_int = 0, None
     tsf = 2 if frac_ps is not None else 0
     words = 1 + 1 + (1 if tsi else 0) + (2 if tsf else 0) + len(payload) // 4
     word0 = (0x1 << 28) | (tsi << 22) | (tsf << 20) | ((count & 0xF) << 16) | words
     out = struct.pack('>II', word0, stream_id)
     if tsi:
-        out += struct.pack('>I', utc_seconds)
+        out += struct.pack('>I', ts_int)
     if tsf:
         out += struct.pack('>Q', frac_ps)
     return out + payload

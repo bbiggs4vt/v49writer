@@ -58,8 +58,10 @@ class StreamCapture:
                  sample_rate: Optional[float] = None,
                  payload_endian: str = 'big',
                  max_samples: Optional[int] = None,
-                 extra_keywords=None):
+                 extra_keywords=None,
+                 gps_leap_seconds: int = vita49.DEFAULT_GPS_LEAP_SECONDS):
         self.template = template
+        self._gps_leap_seconds = gps_leap_seconds
         self.path: Optional[str] = None  # resolved when the file is opened
         self.stream_id = stream_id
         self._fmt_arg = fmt.upper()
@@ -184,6 +186,11 @@ class StreamCapture:
             if pkt.timestamp.tsi == vita49.Tsi.NONE:
                 log.info('[%s] data packets carry no integer timestamps; '
                          'BLUE timecode will be 0', self._label())
+            elif pkt.timestamp.tsi == vita49.Tsi.GPS:
+                log.info('[%s] data packet timestamps are GPS; converting '
+                         'to UTC with a %d leap-second offset '
+                         '(--gps-leap-seconds to change)',
+                         self._label(), self._gps_leap_seconds)
             elif pkt.timestamp.tsi != vita49.Tsi.UTC:
                 self._warn_once(
                     'non-utc-timestamp',
@@ -214,7 +221,7 @@ class StreamCapture:
                      self._label(), self.path, fmt)
 
         if self._first_timestamp is None:
-            utc = pkt.timestamp.to_utc_seconds()
+            utc = pkt.timestamp.to_utc_seconds(self._gps_leap_seconds)
             if utc is not None:
                 self._first_timestamp = utc
                 self._writer.timecode_unix = utc
@@ -321,8 +328,10 @@ class CaptureManager:
                  sample_rate: Optional[float] = None,
                  payload_endian: str = 'big',
                  max_samples: Optional[int] = None,
-                 extra_keywords=None):
+                 extra_keywords=None,
+                 gps_leap_seconds: int = vita49.DEFAULT_GPS_LEAP_SECONDS):
         self.output = output
+        self._gps_leap_seconds = gps_leap_seconds
         self._fmt = fmt
         self._stream_filter = stream_id
         self._sample_rate = sample_rate
@@ -345,7 +354,8 @@ class CaptureManager:
                 sample_rate=self._sample_rate,
                 payload_endian=self._payload_endian,
                 max_samples=self._max_samples,
-                extra_keywords=self._extra_keywords)
+                extra_keywords=self._extra_keywords,
+                gps_leap_seconds=self._gps_leap_seconds)
             self._streams[stream_id] = stream
             if stream_id is not None:
                 log.info('new stream ID 0x%08X', stream_id)

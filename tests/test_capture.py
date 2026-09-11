@@ -174,6 +174,32 @@ def test_capture_max_samples_per_stream(tmp_path):
     assert hdr['data_size'] == 12.0
 
 
+def test_gps_timecode_written(tmp_path, caplog):
+    manager = CaptureManager(str(tmp_path / 'cap.tmp'), fmt='ci')
+    with caplog.at_level('INFO'):
+        _feed(manager, build_data_packet(b'\0' * 8, 0x1, 0,
+                                         gps_seconds=1167264018))
+    manager.close()
+    hdr = bluefile.read_header(str(tmp_path / 'cap_00000001.tmp'))
+    # GPS 1167264018 == 2017-01-01T00:00:00 UTC (unix 1483228800).
+    assert hdr['timecode'] == pytest.approx(1483228800.0
+                                            + bluefile.J1950_TO_UNIX)
+    msgs = [r.message for r in caplog.records]
+    assert any('converting to UTC' in m for m in msgs)
+    assert not any('timecode will be 0' in m for m in msgs)
+
+
+def test_gps_leap_seconds_override(tmp_path):
+    manager = CaptureManager(str(tmp_path / 'cap.tmp'), fmt='ci',
+                             gps_leap_seconds=19)
+    _feed(manager, build_data_packet(b'\0' * 8, 0x1, 0,
+                                     gps_seconds=1167264018))
+    manager.close()
+    hdr = bluefile.read_header(str(tmp_path / 'cap_00000001.tmp'))
+    assert hdr['timecode'] == pytest.approx(1483228799.0
+                                            + bluefile.J1950_TO_UNIX)
+
+
 def test_capture_sample_rate_override(tmp_path):
     template = str(tmp_path / 'cap.tmp')
     manager = CaptureManager(template, fmt='ci', sample_rate=5e6)

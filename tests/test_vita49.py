@@ -23,6 +23,19 @@ def test_parse_data_packet_roundtrip():
     assert pkt.timestamp.to_utc_seconds() == pytest.approx(1_700_000_000.25)
 
 
+def test_gps_timestamp_conversion():
+    # 2017-01-01T00:00:00 UTC is GPS second 1167264018 (18 leap seconds).
+    raw = build_data_packet(b'\0' * 4, 1, 0, gps_seconds=1167264018)
+    pkt, _ = vita49.parse_packet(raw)
+    assert pkt.timestamp.tsi == vita49.Tsi.GPS
+    # Default conversion applies the 18-second GPS-UTC offset.
+    assert pkt.timestamp.to_utc_seconds() == pytest.approx(1483228800.0)
+    # Explicit offsets are honored; None disables conversion.
+    assert pkt.timestamp.to_utc_seconds(gps_leap_seconds=19) == \
+        pytest.approx(1483228799.0)
+    assert pkt.timestamp.to_utc_seconds(gps_leap_seconds=None) is None
+
+
 def test_parse_data_packet_no_timestamps():
     raw = build_data_packet(b'\x01\x02\x03\x04', stream_id=1, count=0)
     pkt, _ = vita49.parse_packet(raw)

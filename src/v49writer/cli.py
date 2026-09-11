@@ -80,6 +80,10 @@ def build_parser() -> argparse.ArgumentParser:
                    default='big',
                    help='byte order of IQ samples in the VRT payload '
                         '(default: big, per the VITA 49 standard)')
+    p.add_argument('--gps-leap-seconds', type=int, default=18,
+                   help='leap-second offset used to convert GPS (TSI=2) '
+                        'timestamps to UTC for the BLUE timecode '
+                        '(default: 18, correct since 2017)')
     p.add_argument('-k', '--keyword', type=_parse_keyword, action='append',
                    default=[], metavar='KEY=VALUE',
                    help='extra extended-header keyword, added to every '
@@ -107,6 +111,7 @@ def main(argv=None) -> int:
         payload_endian=args.payload_endian,
         max_samples=args.max_samples,
         extra_keywords=args.keyword,
+        gps_leap_seconds=args.gps_leap_seconds,
     )
 
     stopping = []
