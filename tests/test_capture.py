@@ -205,6 +205,26 @@ def test_no_max_samples_never_done(tmp_path):
     manager.close()
 
 
+def test_little_endian_payload(tmp_path):
+    # Samples sent little-endian: --payload-endian little must interpret
+    # them without byte-swapping.
+    path_tpl = str(tmp_path / 'cap.tmp')
+    manager = CaptureManager(path_tpl, fmt='ci', payload_endian='little')
+    payload = np.array([100, -200, 300, -400], dtype='<i2').tobytes()
+    _feed(manager, build_data_packet(payload, 0x9, 0))
+    manager.close()
+    data = bluefile.read_data(str(tmp_path / 'cap_00000009.tmp'))
+    np.testing.assert_array_equal(data, [100 - 200j, 300 - 400j])
+
+    # The same bytes read as big-endian (the default) decode differently,
+    # proving the flag changes interpretation.
+    manager2 = CaptureManager(str(tmp_path / 'cap2.tmp'), fmt='ci')
+    _feed(manager2, build_data_packet(payload, 0x9, 0))
+    manager2.close()
+    data2 = bluefile.read_data(str(tmp_path / 'cap2_00000009.tmp'))
+    assert not np.array_equal(data, data2)
+
+
 def test_output_directories_created(tmp_path):
     template = str(tmp_path / 'captures' / 'run1' / 'cap_{sid}.tmp')
     manager = CaptureManager(template, fmt='ci')

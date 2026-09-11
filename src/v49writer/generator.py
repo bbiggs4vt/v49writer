@@ -79,16 +79,18 @@ def build_context_packet(stream_id: int, count: int,
 
 def make_tone(num_samples: int, sample_rate: float, tone_freq: float,
               amplitude: float = 0.5, start_sample: int = 0,
-              item_size_bits: int = 16) -> bytes:
-    """Generate big-endian interleaved complex fixed-point tone samples."""
+              item_size_bits: int = 16, endian: str = 'big') -> bytes:
+    """Generate interleaved complex fixed-point tone samples, big-endian
+    per the VITA 49 standard by default."""
     n = np.arange(start_sample, start_sample + num_samples)
     phase = 2 * np.pi * tone_freq * n / sample_rate
     iq = np.empty(2 * num_samples, dtype=np.float64)
     iq[0::2] = np.cos(phase)
     iq[1::2] = np.sin(phase)
     scale = amplitude * (2 ** (item_size_bits - 1) - 1)
-    dtype = {8: '>i1', 16: '>i2', 32: '>i4'}[item_size_bits]
-    return (iq * scale).round().astype(dtype).tobytes()
+    order = '>' if endian == 'big' else '<'
+    dtype = {8: 'i1', 16: 'i2', 32: 'i4'}[item_size_bits]
+    return (iq * scale).round().astype(order + dtype).tobytes()
 
 
 def main(argv=None) -> int:
@@ -117,6 +119,11 @@ def main(argv=None) -> int:
                    help='bits per I/Q component (default 16)')
     p.add_argument('--context-interval', type=int, default=100,
                    help='send a context packet every N data packets')
+    p.add_argument('--payload-endian', choices=['big', 'little'],
+                   default='big',
+                   help='byte order of the IQ samples in the payload '
+                        '(default: big, per the VITA 49 standard; little '
+                        'simulates a nonconformant source)')
     p.add_argument('--throttle', action='store_true',
                    help='pace transmission at the sample rate')
     args = p.parse_args(argv)
@@ -152,7 +159,8 @@ def main(argv=None) -> int:
                 payload = make_tone(
                     n, args.sample_rate,
                     args.tone_freq + idx * args.tone_step,
-                    start_sample=sent, item_size_bits=args.bits)
+                    start_sample=sent, item_size_bits=args.bits,
+                    endian=args.payload_endian)
                 now = time.time()
                 sock.sendall(build_data_packet(
                     payload, stream_id, data_count & 0xF,
