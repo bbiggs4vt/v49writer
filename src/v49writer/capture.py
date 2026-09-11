@@ -87,6 +87,7 @@ class StreamCapture:
         self.samples_written = 0
         self.done = False
         self._warned = set()
+        self._context_fmt_unusable = False
 
     def _warn_once(self, key: str, msg: str, *args) -> None:
         """Log a warning the first time ``key`` occurs for this stream;
@@ -120,13 +121,20 @@ class StreamCapture:
         if pkt.payload_format is not None:
             fmt = pkt.payload_format.blue_format()
             if fmt is None:
+                self._context_fmt_unusable = True
                 self._warn_once(
                     'bad-payload-format',
-                    'context payload format not representable in BLUE '
-                    '(real/complex=%d, item_format=0x%02X, size=%d bits); '
-                    'ignoring', pkt.payload_format.real_complex,
+                    'context payload format not representable in BLUE: raw '
+                    'field words 0x%08X 0x%08X decode as real/complex=%d, '
+                    'item_format=0x%02X, item size=%d bits, packing size='
+                    '%d bits; ignoring. For complex float32 the field '
+                    'should be 0x2E0007DF 0x00000000',
+                    pkt.payload_format.raw_word1,
+                    pkt.payload_format.raw_word2,
+                    pkt.payload_format.real_complex,
                     pkt.payload_format.item_format,
-                    pkt.payload_format.data_item_size)
+                    pkt.payload_format.data_item_size,
+                    pkt.payload_format.item_packing_size)
             else:
                 if self._context_fmt != fmt:
                     log.info('[%s] context: payload format %s',
@@ -141,7 +149,13 @@ class StreamCapture:
             return self._fmt_arg
         if self._context_fmt is not None:
             return self._context_fmt
-        if self.context_packets:
+        if self._context_fmt_unusable:
+            log.warning('[%s] the context payload format field could not '
+                        'be used (see earlier warning); assuming %s '
+                        '(16-bit complex). Fix the field at the source or '
+                        'force the format with -f',
+                        self._label(), self._fallback_fmt)
+        elif self.context_packets:
             log.warning('[%s] %d context packet(s) seen, but none carried '
                         'a Signal Data Payload Format field (CIF0 bit 15); '
                         'assuming %s (16-bit complex). If the stream is not '

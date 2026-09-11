@@ -93,6 +93,8 @@ class PayloadFormat:
     item_format: int       # 0 = signed fixed point, 14 = IEEE float32, ...
     item_packing_size: int  # bits
     data_item_size: int     # bits
+    raw_word1: int = 0      # the two field words as received, for diagnostics
+    raw_word2: int = 0
 
     ITEM_FMT_SIGNED_FIXED = 0x00
     ITEM_FMT_UNSIGNED_FIXED = 0x10
@@ -357,13 +359,14 @@ def _parse_context(buf, pos, end, count, size_words, stream_id, class_id,
     if cif0 & (1 << 16):   # State and event indicators
         take(1)
     if cif0 & (1 << 15):   # Signal data packet payload format
-        w1, _w2 = take(2)
+        w1, w2 = take(2)
         pkt.payload_format = PayloadFormat(
             packing_method=(w1 >> 31) & 0x1,
             real_complex=(w1 >> 29) & 0x3,
             item_format=(w1 >> 24) & 0x1F,
             item_packing_size=((w1 >> 6) & 0x3F) + 1,
             data_item_size=(w1 & 0x3F) + 1,
+            raw_word1=w1, raw_word2=w2,
         )
     # Remaining CIF0 fields (GPS/INS/ephemeris/ASCII/association lists) are
     # variable-length or positional data we do not need; stop here.

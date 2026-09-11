@@ -220,6 +220,24 @@ def test_context_without_payload_format_warns_specifically(tmp_path, caplog):
     assert not any('no context packet seen' in m for m in msgs)
 
 
+def test_unusable_payload_format_warns_with_raw_words(tmp_path, caplog):
+    # A payload format field with a reserved item format code: the warning
+    # must show the raw on-wire words, and the fallback message must say
+    # the field was unusable, not absent.
+    manager = CaptureManager(str(tmp_path / 'cap.tmp'), fmt='auto')
+    with caplog.at_level('WARNING'):
+        _feed(manager, build_context_packet(0x1, 0, sample_rate=1e6,
+                                            item_size_bits=64,
+                                            item_format=0x0A,
+                                            real_complex=0))
+        _feed(manager, build_data_packet(b'\0' * 8, 0x1, 0))
+    manager.close()
+    msgs = [r.message for r in caplog.records]
+    assert any('raw field words 0x0A000FFF 0x00000000' in m for m in msgs)
+    assert any('could not be used' in m for m in msgs)
+    assert not any('none carried' in m for m in msgs)
+
+
 def test_little_endian_payload(tmp_path):
     # Samples sent little-endian: --payload-endian little must interpret
     # them without byte-swapping.
