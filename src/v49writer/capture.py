@@ -141,9 +141,20 @@ class StreamCapture:
             return self._fmt_arg
         if self._context_fmt is not None:
             return self._context_fmt
-        log.warning('[%s] no context packet seen before first data packet; '
-                    'assuming %s (16-bit complex)',
-                    self._label(), self._fallback_fmt)
+        if self.context_packets:
+            log.warning('[%s] %d context packet(s) seen, but none carried '
+                        'a Signal Data Payload Format field (CIF0 bit 15); '
+                        'assuming %s (16-bit complex). If the stream is not '
+                        '16-bit complex fixed point, set the field at the '
+                        'source or force the format with -f',
+                        self._label(), self.context_packets,
+                        self._fallback_fmt)
+        else:
+            log.warning('[%s] no context packet seen before first data '
+                        'packet; assuming %s (16-bit complex). If the '
+                        'stream is not 16-bit complex fixed point, force '
+                        'the format with -f', self._label(),
+                        self._fallback_fmt)
         return self._fallback_fmt
 
     def handle_data(self, pkt: vita49.DataPacket) -> None:

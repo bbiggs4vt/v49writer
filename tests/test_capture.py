@@ -205,6 +205,21 @@ def test_no_max_samples_never_done(tmp_path):
     manager.close()
 
 
+def test_context_without_payload_format_warns_specifically(tmp_path, caplog):
+    # A context packet that carries sample rate but no payload format
+    # field must produce the CIF0-bit-15 diagnostic, not the generic
+    # "no context packet seen" message.
+    manager = CaptureManager(str(tmp_path / 'cap.tmp'), fmt='auto')
+    with caplog.at_level('WARNING'):
+        _feed(manager, build_context_packet(0x1, 0, sample_rate=1e6,
+                                            item_size_bits=None))
+        _feed(manager, build_data_packet(b'\0' * 8, 0x1, 0))
+    manager.close()
+    msgs = [r.message for r in caplog.records]
+    assert any('Signal Data Payload Format field' in m for m in msgs)
+    assert not any('no context packet seen' in m for m in msgs)
+
+
 def test_little_endian_payload(tmp_path):
     # Samples sent little-endian: --payload-endian little must interpret
     # them without byte-swapping.
